@@ -139,6 +139,26 @@ final class InlineDelimiterRewriterTests: XCTestCase {
     XCTAssertEqual(content?.string, "a====b")
   }
 
+  func test_punctuation_boundary_blocks_open() async {
+    // markdown-it flanking: `(` punct after `==` next to alnum `a` can't open.
+    let content = await renderedParagraph("a==(b)==c")
+    XCTAssertEqual(content?.string, "a==(b)==c")
+  }
+
+  func test_punctuation_boundary_blocks_close() async {
+    let content = await renderedParagraph("x==hi!==y")
+    XCTAssertEqual(content?.string, "x==hi!==y")
+  }
+
+  func test_punctuation_picks_the_right_pair() async {
+    // `==` after `)` can't close; the trailing `==` pairs with the
+    // post-`)` opener instead, matching markdown-it's pair choice.
+    let content = await renderedParagraph("x==a)==b==")
+    XCTAssertEqual(content?.string, "x==a)b")
+    XCTAssertNotNil(background(at: 5, in: content))
+    XCTAssertNil(background(at: 0, in: content))
+  }
+
   func test_highlight_preserves_link() async {
     let content = await renderedParagraph("==a [x](https://ex.com) b==")
     XCTAssertEqual(content?.string, "a x b")
