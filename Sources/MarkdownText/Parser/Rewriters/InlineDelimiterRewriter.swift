@@ -229,7 +229,12 @@ final class InlineDelimiterRewriter: MarkupRewriter {
         index += 1
       case .marker(let specIndex, _, _):
         let spec = specs[specIndex]
-        guard let close = closeForOpen[index], depth < Self.maxDepth else {
+        // `close < range.upperBound` keeps cross-spec pairs from escaping
+        // the enclosing wrap's range: per-spec opener stacks can produce a
+        // pair whose closer lies outside an inner emit, which would emit
+        // the enclosing pieces twice. Crossing markers stay literal and the
+        // outer pair wins.
+        guard let close = closeForOpen[index], close < range.upperBound, depth < Self.maxDepth else {
           output.append(Text(spec.marker))
           index += 1
           continue
@@ -250,7 +255,17 @@ final class InlineDelimiterRewriter: MarkupRewriter {
           innerEnd -= 1
         }
         let inner = emit(pieces, in: innerStart..<innerEnd, closeForOpen: closeForOpen, depth: depth + 1)
-        let containsWhitespace = inner.contains { markup in
+        // An empty inner range (`a====b`) means the markers delimit nothing;
+        // emit them literally so the `=`s are not swallowed.
+        guard !inner.isEmpty else {
+          output.append(contentsOf: leading.map { Text($0) })
+          output.append(Text(spec.marker))
+          output.append(Text(spec.marker))
+          output.append(contentsOf: trailing.map { Text($0) })
+          index = close + 1
+          continue
+        }
+        let containsWhitespace = !spec.allowsInnerWhitespace && inner.contains { markup in
           markup.plainText.contains { $0.isWhitespace }
         }
         output.append(contentsOf: leading.map { Text($0) })
@@ -273,8 +288,8 @@ final class InlineDelimiterRewriter: MarkupRewriter {
   /// around nested attribute nodes are split instead: each nested node's
   /// children are re-wrapped under the union of both key sets, which keeps
   /// e.g. `==a <sup>b</sup>==` as highlighted text with a superscripted `b`
-  /// rather than dropping the inner style. Other non-recurring children
-  /// (`Link`, `Image`) degrade to their plain text inside the current run.
+  /// rather than dropping the inner style. `Link` and `Image` children end
+  /// the current run and pass through unstyled but alive.
   private func attributeWrap(_ key: String, _ inner: [InlineMarkup]) -> [InlineMarkup] {
     var output: [InlineMarkup] = []
     var run: [any RecurringInlineMarkup] = []
@@ -296,7 +311,12 @@ final class InlineDelimiterRewriter: MarkupRewriter {
       } else if let recurring = markup as? (any RecurringInlineMarkup) {
         run.append(recurring)
       } else {
-        run.append(Text(markup.plainText))
+        // `Link` and `Image` stay in the output between styled runs rather
+        // than degrading to text: `==a [x](u) b==` keeps a live link and
+        // `==a ![i](s) b==` keeps the image paragraph-visible for
+        // `ImageBlockRewriter`.
+        flushRun()
+        output.append(markup)
       }
     }
     flushRun()
@@ -318,9 +338,7 @@ final class InlineDelimiterRewriter: MarkupRewriter {
     for match in inner.matches(of: regex) {
       guard let key = match.output[1].substring else { continue }
       let entry = "\(key):true"
-      // `{` or `,` boundary avoids prefix false-positives like `sub:` inside
-      // `subscript:`.
-      if !merged.contains("{\(entry)") && !merged.contains(",\(entry)") {
+      if !merged.split(separator: ",").map(String.init).contains(entry) {
         merged += ",\(entry)"
       }
       found = true
