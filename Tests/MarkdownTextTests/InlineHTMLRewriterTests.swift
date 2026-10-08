@@ -130,6 +130,77 @@ final class InlineHTMLRewriterTests: XCTestCase {
     XCTAssertEqual(content?.string, "a <a>x</a>")
   }
 
+  func test_data_href_does_not_produce_a_link() async {
+    let content = await renderedParagraph("a <a data-href=\"https://evil.example\">x</a>")
+    XCTAssertEqual(content?.string, "a <a data-href=\"https://evil.example\">x</a>")
+    let link = content?.attribute(.link, at: 2, effectiveRange: nil)
+    XCTAssertNil(link)
+  }
+
+  func test_uppercase_href_produces_link() async {
+    let content = await renderedParagraph("a <a HREF=\"https://example.com\">x</a>")
+    XCTAssertEqual(content?.string, "a x")
+    let link = content?.attribute(.link, at: 2, effectiveRange: nil) as? URL
+    XCTAssertEqual(link?.absoluteString, "https://example.com")
+  }
+
+  func test_quoted_attribute_containing_href_is_skipped() async {
+    let content = await renderedParagraph("a <a title=\"v href='x'\" href=\"https://real.example\">x</a>")
+    let link = content?.attribute(.link, at: 2, effectiveRange: nil) as? URL
+    XCTAssertEqual(link?.absoluteString, "https://real.example")
+  }
+
+  func test_href_entities_are_decoded() async {
+    let content = await renderedParagraph("a <a href=\"https://x.example?a=1&amp;b=2\">x</a>")
+    let link = content?.attribute(.link, at: 2, effectiveRange: nil) as? URL
+    XCTAssertEqual(link?.absoluteString, "https://x.example?a=1&b=2")
+  }
+
+  func test_stray_br_close_tag_renders_line_break() async {
+    let content = await renderedParagraph("a</br>b")
+    XCTAssertEqual(content?.string, "a\nb")
+  }
+
+  func test_standalone_tag_block_renders_literally() async {
+    // `<b>` on its own line is an HTML block (cmark type 7); it must not lose text.
+    let renderables = await renderables("intro\n\n<b>\nHello world\n</b>\n\noutro")
+    let allText = renderables.compactMap { renderable -> String? in
+      guard case .paragraph(_, let content) = renderable else { return nil }
+      return content.string
+    }.joined()
+    XCTAssertTrue(allText.contains("Hello world"))
+    XCTAssertTrue(allText.contains("intro"))
+  }
+
+  func test_underline_wraps_text_around_a_link() async {
+    let content = await renderedParagraph("<u>before <a href=\"https://x.example\">mid</a> after</u>")
+    XCTAssertEqual(content?.string, "before mid after")
+    let underlineBefore = content?.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int
+    XCTAssertEqual(underlineBefore, NSUnderlineStyle.single.rawValue)
+    let link = content?.attribute(.link, at: 7, effectiveRange: nil) as? URL
+    XCTAssertEqual(link?.absoluteString, "https://x.example")
+    let underlineAfter = content?.attribute(.underlineStyle, at: 10, effectiveRange: nil) as? Int
+    XCTAssertEqual(underlineAfter, NSUnderlineStyle.single.rawValue)
+  }
+
+  func test_link_wraps_attribute_styled_text() async {
+    let content = await renderedParagraph("<a href=\"https://x.example\"><u>x</u></a>")
+    XCTAssertEqual(content?.string, "x")
+    let link = content?.attribute(.link, at: 0, effectiveRange: nil) as? URL
+    XCTAssertEqual(link?.absoluteString, "https://x.example")
+  }
+
+  func test_code_tag_flattens_nested_inline_code() async {
+    let content = await renderedParagraph("<code>a `b` c</code>")
+    XCTAssertEqual(content?.string, "a b c")
+  }
+
+  func test_deeply_unclosed_tags_do_not_crash() async {
+    let opens = String(repeating: "<b>", count: 500)
+    let content = await renderedParagraph("a \(opens)x")
+    XCTAssertNotNil(content?.string)
+  }
+
   // MARK: - Non-regression
 
   func test_document_without_html_is_untouched() async {

@@ -21,7 +21,16 @@ import Markdown
 /// so their source stays visible. An open tag with no matching close applies
 /// to the rest of the inline container (browser-style auto-close), which keeps
 /// streamed documents sensible while a tag is still arriving.
+///
+/// Standalone-line tags are parsed by cmark as `HTMLBlock` rather than
+/// `InlineHTML`; those blocks are converted to literal paragraphs so their
+/// text is never silently dropped.
 final class InlineHTMLRewriter: MarkupRewriter {
+
+  /// Maximum tag-pair nesting depth processed before the remainder of a
+  /// container is emitted literally. Bounds recursion and the per-open
+  /// closing-tag scan on adversarial inputs like thousands of unclosed tags.
+  private static let maxDepth = 64
 
   private enum Tag {
     case open(name: String, attributes: String)
@@ -36,7 +45,15 @@ final class InlineHTMLRewriter: MarkupRewriter {
     "code", "kbd", "samp", "tt", "a"
   ]
 
-  private static let hrefRegex = try? Regex(#"href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#)
+  /// Whitespace cmark accepts inside a tag (`spacechar` in the HTML scanners).
+  private static let htmlWhitespace: Set<Character> = [" ", "\t", "\n", "\r", "\u{0B}", "\u{0C}"]
+
+  /// `HTMLBlock` nodes have no renderable representation; without this they
+  /// would be dropped, losing their text entirely. Render the source verbatim
+  /// so `<details>` and friends degrade to readable text.
+  func visitHTMLBlock(_ htmlBlock: HTMLBlock) -> Markup? {
+    return Paragraph([Text(htmlBlock.rawHTML)])
+  }
 
   func visitParagraph(_ paragraph: Paragraph) -> Markup? { rewriteInlineChildren(paragraph) }
   func visitHeading(_ heading: Heading) -> Markup? { rewriteInlineChildren(heading) }
@@ -61,13 +78,24 @@ final class InlineHTMLRewriter: MarkupRewriter {
     return visited
   }
 
-  /// Whether the subtree contains any `InlineHTML` node. Used to prune
-  /// containers (and whole documents) that need no rewriting.
+  /// Whether the subtree contains any `InlineHTML` or `HTMLBlock` node. Used
+  /// to prune containers (and whole documents) that need no rewriting.
   static func containsInlineHTML(_ markup: Markup) -> Bool {
-    markup.children.contains { $0 is InlineHTML || containsInlineHTML($0) }
+    markup.children.contains {
+      $0 is InlineHTML || $0 is HTMLBlock || containsInlineHTML($0)
+    }
   }
 
-  private func process(_ input: [Markup]) -> [InlineMarkup] {
+  private func process(_ input: [Markup], depth: Int = 0) -> [InlineMarkup] {
+    // At the depth cap, emit everything verbatim: `InlineHTML` becomes literal
+    // text and other nodes pass through. This bounds recursion and the
+    // per-open scan on inputs like thousands of unclosed `<b>` tags.
+    if depth >= Self.maxDepth {
+      return input.compactMap { markup in
+        if let html = markup as? InlineHTML { return Text(html.rawHTML) }
+        return markup as? InlineMarkup
+      }
+    }
     var output: [InlineMarkup] = []
     var index = 0
     while index < input.count {
@@ -80,6 +108,10 @@ final class InlineHTMLRewriter: MarkupRewriter {
       }
       switch classify(html) {
       case .comment:
+        index += 1
+      case .close("br"):
+        // `</br>` is a parse error that browsers treat as `<br>`.
+        output.append(LineBreak())
         index += 1
       case .other, .close:
         output.append(Text(html.rawHTML))
@@ -101,28 +133,31 @@ final class InlineHTMLRewriter: MarkupRewriter {
           continue
         }
         if let closeIndex = findClosingIndex(named: name, in: input, from: index + 1) {
-          let inner = process(Array(input[(index + 1)..<closeIndex]))
-          if let wrapped = wrapPair(name: name, attributes: attributes, inner: inner) {
-            output.append(wrapped)
-          } else {
-            output.append(Text(html.rawHTML))
-            output.append(contentsOf: inner)
-            output.append(Text((input[closeIndex] as? InlineHTML)?.rawHTML ?? ""))
-          }
+          let inner = process(Array(input[(index + 1)..<closeIndex]), depth: depth + 1)
+          output.append(contentsOf: wrapOrLiteral(open: html, close: input[closeIndex], name: name, attributes: attributes, inner: inner))
           index = closeIndex + 1
         } else {
-          let inner = process(Array(input[(index + 1)...]))
-          if let wrapped = wrapPair(name: name, attributes: attributes, inner: inner) {
-            output.append(wrapped)
-          } else {
-            output.append(Text(html.rawHTML))
-            output.append(contentsOf: inner)
-          }
+          let inner = process(Array(input[(index + 1)...]), depth: depth + 1)
+          output.append(contentsOf: wrapOrLiteral(open: html, close: nil, name: name, attributes: attributes, inner: inner))
           index = input.count
         }
       }
     }
     return output
+  }
+
+  /// Returns the wrapped pair, or the literal open tag + inner nodes + literal
+  /// close tag when the pair can't be represented.
+  private func wrapOrLiteral(open: InlineHTML, close: Markup?, name: String, attributes: String, inner: [InlineMarkup]) -> [InlineMarkup] {
+    if let wrapped = wrapPair(name: name, attributes: attributes, inner: inner) {
+      return wrapped
+    }
+    var literal: [InlineMarkup] = [Text(open.rawHTML)]
+    literal.append(contentsOf: inner)
+    if let close = close as? InlineHTML {
+      literal.append(Text(close.rawHTML))
+    }
+    return literal
   }
 
   private func classify(_ html: InlineHTML) -> Tag {
@@ -132,13 +167,13 @@ final class InlineHTMLRewriter: MarkupRewriter {
     var inner = String(raw.dropFirst().dropLast())
     if inner.hasPrefix("/") {
       inner.removeFirst()
-      let name = inner.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "/" }).first.map(String.init) ?? ""
+      let name = inner.split(whereSeparator: { Self.htmlWhitespace.contains($0) || $0 == "/" }).first.map(String.init) ?? ""
       return name.first?.isLetter == true ? .close(name: name.lowercased()) : .other
     }
     // A trailing "/" does not close non-void elements in HTML5, so `<b/>x`
     // behaves like `<b>x`; the tag is still treated as an open.
     if inner.hasSuffix("/") { inner = String(inner.dropLast()) }
-    guard let nameEnd = inner.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "\n" }) else {
+    guard let nameEnd = inner.firstIndex(where: { Self.htmlWhitespace.contains($0) }) else {
       let name = inner.lowercased()
       return name.first?.isLetter == true ? .open(name: name, attributes: "") : .other
     }
@@ -170,14 +205,14 @@ final class InlineHTMLRewriter: MarkupRewriter {
 
   /// Wraps the processed children of a matched tag pair, or returns `nil` when
   /// the pair cannot be represented (the caller then renders it literally).
-  private func wrapPair(name: String, attributes: String, inner: [InlineMarkup]) -> InlineMarkup? {
+  private func wrapPair(name: String, attributes: String, inner: [InlineMarkup]) -> [InlineMarkup]? {
     switch name {
     case "b", "strong":
-      return Strong(inner)
+      return [Strong(inner)]
     case "i", "em":
-      return Emphasis(inner)
+      return [Emphasis(inner)]
     case "s", "del", "strike":
-      return Strikethrough(inner)
+      return [Strikethrough(inner)]
     case "u", "ins":
       return attributeWrap("underline", inner)
     case "mark":
@@ -187,46 +222,153 @@ final class InlineHTMLRewriter: MarkupRewriter {
     case "sup":
       return attributeWrap("superscript", inner)
     case "code", "kbd", "samp", "tt":
-      return InlineCode(inner.map { $0.plainText }.joined())
+      return [InlineCode(inner.map { ($0 as? InlineCode)?.code ?? $0.plainText }.joined())]
     case "a":
       guard let href = hrefValue(in: attributes),
-            let children = recurring(inner) else { return nil }
-      return Link(destination: href, children)
+            let children = linkChildren(inner) else { return nil }
+      return [Link(destination: href, children)]
     default:
       return nil
     }
   }
 
-  /// `InlineAttributes` children must be `RecurringInlineMarkup`, so stacked
-  /// attribute tags (`<u><sup>x</sup></u>`) compose by merging keys into a
-  /// single node. A non-recurring child makes the pair render literally.
-  private func attributeWrap(_ key: String, _ inner: [InlineMarkup]) -> InlineMarkup? {
-    if inner.count == 1, let nested = inner.first as? InlineAttributes {
-      let children = Array(nested.children).compactMap { $0 as? (any RecurringInlineMarkup) }
-      guard children.count == nested.childCount else { return nil }
-      return InlineAttributes(attributes: mergedAttributes(nested.attributes, key: key), children)
+  /// `InlineAttributes` children must be `RecurringInlineMarkup`. Stacked
+  /// attribute tags (`<u><sup>x</sup></u>`) merge into a single node; other
+  /// non-recurring children (`Link`, `Image`) split the attribute run so the
+  /// surrounding text still gets the style instead of the whole pair going
+  /// literal.
+  private func attributeWrap(_ key: String, _ inner: [InlineMarkup]) -> [InlineMarkup] {
+    var output: [InlineMarkup] = []
+    var run: [any RecurringInlineMarkup] = []
+
+    func flushRun() {
+      guard !run.isEmpty else { return }
+      output.append(InlineAttributes(attributes: "{\(key):true}", run))
+      run = []
     }
-    guard let children = recurring(inner) else { return nil }
-    return InlineAttributes(attributes: "{\(key):true}", children)
+
+    for markup in inner {
+      if let attributes = markup as? InlineAttributes {
+        // Nested attribute tags merge keys: `<u><sup>x</sup></u>` keeps both
+        // underline and superscript. Children that can't rebuild the node
+        // degrade to the unmerged original.
+        flushRun()
+        if let children = recurring(Array(attributes.children)) {
+          output.append(InlineAttributes(attributes: mergedAttributes(attributes.attributes, key: key), children))
+        } else {
+          output.append(attributes)
+        }
+      } else if let recurring = markup as? (any RecurringInlineMarkup) {
+        run.append(recurring)
+      } else {
+        // Non-recurring nodes (`Link`, `Image`) end the run but stay in the
+        // output, so `<u>text <a>x</a> more</u>` underlines both text parts.
+        flushRun()
+        output.append(markup)
+      }
+    }
+    flushRun()
+    return output
   }
 
+  /// Attributes produced by this rewriter always end in `}`; attribute nodes
+  /// from other sources keep their original string, dropping the new key —
+  /// graceful degradation rather than a malformed merge.
   private func mergedAttributes(_ attributes: String, key: String) -> String {
     guard attributes.hasSuffix("}") else { return attributes }
     return String(attributes.dropLast()) + ",\(key):true}"
   }
 
-  private func recurring(_ inner: [InlineMarkup]) -> [any RecurringInlineMarkup]? {
+  /// `Link` children must be `RecurringInlineMarkup`; `InlineAttributes` nodes
+  /// inside an anchor are flattened to their children (the link wins over the
+  /// inner styling, which is the more useful behavior).
+  private func linkChildren(_ inner: [InlineMarkup]) -> [any RecurringInlineMarkup]? {
+    var children: [any RecurringInlineMarkup] = []
+    for markup in inner {
+      if let attributes = markup as? InlineAttributes {
+        guard let nested = recurring(Array(attributes.children)) else { return nil }
+        children.append(contentsOf: nested)
+      } else if let recurring = markup as? (any RecurringInlineMarkup) {
+        children.append(recurring)
+      } else {
+        return nil
+      }
+    }
+    return children
+  }
+
+  private func recurring(_ inner: [Markup]) -> [any RecurringInlineMarkup]? {
     let children = inner.compactMap { $0 as? (any RecurringInlineMarkup) }
     return children.count == inner.count ? children : nil
   }
 
+  /// Extracts the `href` value from a tag's attribute string with a
+  /// quote-aware scan: attribute names are matched case-insensitively on a
+  /// whitespace boundary, and quoted values are skipped rather than scanned,
+  /// so `data-href` or `title="a href='b'"` can't produce a link.
   private func hrefValue(in attributes: String) -> String? {
-    guard let regex = Self.hrefRegex, let match = attributes.firstMatch(of: regex) else { return nil }
-    for index in 1...3 {
-      if let substring = match.output[index].substring {
-        return String(substring)
+    var index = attributes.startIndex
+    var previousWasBoundary = true
+    while index < attributes.endIndex {
+      let character = attributes[index]
+      if character == "\"" || character == "'" {
+        // Skip a quoted attribute value entirely.
+        index = attributes[index...].dropFirst().firstIndex(of: character) ?? attributes.endIndex
+        if index < attributes.endIndex { index = attributes.index(after: index) }
+        previousWasBoundary = false
+        continue
       }
+      defer { index = attributes.index(after: index) }
+      if character == "h" || character == "H", previousWasBoundary {
+        let rest = attributes[index...]
+        if rest.count >= 4, rest.prefix(4).lowercased() == "href" {
+          var cursor = rest.index(rest.startIndex, offsetBy: 4)
+          while cursor < attributes.endIndex, Self.htmlWhitespace.contains(attributes[cursor]) {
+            cursor = attributes.index(after: cursor)
+          }
+          if cursor < attributes.endIndex, attributes[cursor] == "=" {
+            cursor = attributes.index(after: cursor)
+            while cursor < attributes.endIndex, Self.htmlWhitespace.contains(attributes[cursor]) {
+              cursor = attributes.index(after: cursor)
+            }
+            return decodeEntities(attributeValue(in: attributes, from: &cursor))
+          }
+        }
+      }
+      previousWasBoundary = Self.htmlWhitespace.contains(character)
     }
     return nil
+  }
+
+  /// Reads one attribute value: quoted, or unquoted until whitespace/`>`.
+  private func attributeValue(in attributes: String, from cursor: inout String.Index) -> String {
+    guard cursor < attributes.endIndex else { return "" }
+    let quote = attributes[cursor]
+    if quote == "\"" || quote == "'" {
+      let valueStart = attributes.index(after: cursor)
+      let valueEnd = attributes[valueStart...].firstIndex(of: quote) ?? attributes.endIndex
+      cursor = valueEnd < attributes.endIndex ? attributes.index(after: valueEnd) : attributes.endIndex
+      return String(attributes[valueStart..<valueEnd])
+    }
+    var end = cursor
+    while end < attributes.endIndex, !Self.htmlWhitespace.contains(attributes[end]), attributes[end] != ">" {
+      end = attributes.index(after: end)
+    }
+    defer { cursor = end }
+    return String(attributes[cursor..<end])
+  }
+
+  /// Decodes the common named and numeric entities found in attribute values
+  /// (cmark decodes `Text` nodes but never sees attribute contents).
+  private func decodeEntities(_ value: String) -> String {
+    guard value.contains("&") else { return value }
+    var result = value
+    result = result.replacingOccurrences(of: "&quot;", with: "\"")
+    result = result.replacingOccurrences(of: "&#39;", with: "'")
+    result = result.replacingOccurrences(of: "&#x27;", with: "'")
+    result = result.replacingOccurrences(of: "&lt;", with: "<")
+    result = result.replacingOccurrences(of: "&gt;", with: ">")
+    result = result.replacingOccurrences(of: "&amp;", with: "&")
+    return result
   }
 }
