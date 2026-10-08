@@ -168,6 +168,13 @@ final class InlineDelimiterRewriterTests: XCTestCase {
     XCTAssertNotNil(background(at: 4, in: content))
   }
 
+  func test_image_inside_emphasis_highlight_degrades_to_alt_text() async {
+    // Inside `**…**` an Image node would be dropped at conversion; the
+    // alt text joins the styled run instead.
+    let content = await renderedParagraph("**==a ![i](https://ex.com/i.png) b==**")
+    XCTAssertEqual(content?.string, "a i b")
+  }
+
   func test_highlight_preserves_paragraph_level_image() async {
     let renderables = await parser.parse(
       text: "==a ![alt](https://ex.com/i.png) b==",
