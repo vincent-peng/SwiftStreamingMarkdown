@@ -91,7 +91,7 @@ final class InlineDelimiterRewriter: MarkupRewriter {
     if visited is Link || visited is Image || visited is InlineAttributes {
       return visited
     }
-    visited.setInlineChildren(process(Array(visited.children)))
+    visited.setInlineChildren(process(Array(visited.children), allowsImagePassthrough: visited is Paragraph))
     return visited
   }
 
@@ -106,16 +106,20 @@ final class InlineDelimiterRewriter: MarkupRewriter {
     }
   }
 
-  /// Pairs the container's direct children. When no marker pair exists the
-  /// input passes through unchanged so untouched subtrees keep identity.
-  private func process(_ input: [Markup]) -> [InlineMarkup] {
+  /// Pairs the container's direct children. `allowsImagePassthrough` is
+  /// true only at paragraph level, where `ImageBlockRewriter` can hoist a
+  /// paragraph-level `Image` out of a wrap; deeper containers would drop
+  /// the node at conversion. When no marker pair exists the input passes
+  /// through unchanged so untouched subtrees keep identity.
+  private func process(_ input: [Markup], allowsImagePassthrough: Bool) -> [InlineMarkup] {
     var pieces = tokenize(input)
     applyFlanking(&pieces)
     let closeForOpen = pairedCloses(in: pieces)
     guard !closeForOpen.isEmpty else {
       return input.compactMap { $0 as? InlineMarkup }
     }
-    return emit(pieces, in: 0..<pieces.count, closeForOpen: closeForOpen, depth: 0)
+    return emit(pieces, in: 0..<pieces.count, closeForOpen: closeForOpen, depth: 0,
+                allowsImagePassthrough: allowsImagePassthrough)
   }
 
   /// Splits sibling inline nodes into pieces. `Text` runs of a marker
@@ -232,7 +236,8 @@ final class InlineDelimiterRewriter: MarkupRewriter {
   /// Emits the piece range, wrapping each paired open/close span in an
   /// `InlineAttributes` node. Pairs nest, so an outer wrap absorbs an inner
   /// `InlineAttributes` as plain text; unpaired markers become literal text.
-  private func emit(_ pieces: [Piece], in range: Range<Int>, closeForOpen: [Int: Int], depth: Int) -> [InlineMarkup] {
+  private func emit(_ pieces: [Piece], in range: Range<Int>, closeForOpen: [Int: Int], depth: Int,
+                    allowsImagePassthrough: Bool) -> [InlineMarkup] {
     var output: [InlineMarkup] = []
     var index = range.lowerBound
     while index < range.upperBound {
@@ -275,7 +280,8 @@ final class InlineDelimiterRewriter: MarkupRewriter {
           trailing.insert(string, at: 0)
           innerEnd -= 1
         }
-        let inner = emit(pieces, in: innerStart..<innerEnd, closeForOpen: closeForOpen, depth: depth + 1)
+        let inner = emit(pieces, in: innerStart..<innerEnd, closeForOpen: closeForOpen, depth: depth + 1,
+                         allowsImagePassthrough: allowsImagePassthrough)
         // An empty inner range (`a====b`) means the markers delimit nothing;
         // emit in piece order so nothing is lost or reordered.
         guard !inner.isEmpty else {
@@ -291,7 +297,8 @@ final class InlineDelimiterRewriter: MarkupRewriter {
         }
         if spec.allowsInnerWhitespace || !containsWhitespace {
           output.append(contentsOf: leading.map { Text($0) })
-          output.append(contentsOf: attributeWrap("\(spec.attribute):true", inner))
+          output.append(contentsOf: attributeWrap("\(spec.attribute):true", inner,
+                                                  allowsImagePassthrough: allowsImagePassthrough))
           output.append(contentsOf: trailing.map { Text($0) })
         } else {
           // Rejected pairs emit literally in piece order.
@@ -312,9 +319,13 @@ final class InlineDelimiterRewriter: MarkupRewriter {
   /// around nested attribute nodes are split instead: each nested node's
   /// children are re-wrapped under the union of both key sets, which keeps
   /// e.g. `==a <sup>b</sup>==` as highlighted text with a superscripted `b`
-  /// rather than dropping the inner style. `Link` and `Image` children end
-  /// the current run and pass through unstyled but alive.
-  private func attributeWrap(_ key: String, _ inner: [InlineMarkup]) -> [InlineMarkup] {
+  /// rather than dropping the inner style. `Link` and paragraph-level
+  /// `Image` children end the current run and pass through unstyled but
+  /// alive; other non-recurring nodes (`SymbolLink`, or `Image` inside a
+  /// deeper container that can't hoist it) degrade to their text fallback
+  /// so they join the styled run instead of vanishing at conversion.
+  private func attributeWrap(_ key: String, _ inner: [InlineMarkup],
+                             allowsImagePassthrough: Bool) -> [InlineMarkup] {
     var output: [InlineMarkup] = []
     var run: [any RecurringInlineMarkup] = []
 
@@ -328,19 +339,24 @@ final class InlineDelimiterRewriter: MarkupRewriter {
       if let attributes = markup as? InlineAttributes {
         flushRun()
         if let mergedKey = mergedKeys(key, inner: attributes.attributes) {
-          output.append(contentsOf: attributeWrap(mergedKey, attributes.children.compactMap { $0 as? InlineMarkup }))
+          output.append(contentsOf: attributeWrap(mergedKey, attributes.children.compactMap { $0 as? InlineMarkup },
+                                                  allowsImagePassthrough: allowsImagePassthrough))
         } else {
           output.append(attributes)
         }
       } else if let recurring = markup as? (any RecurringInlineMarkup) {
         run.append(recurring)
-      } else {
-        // `Link` and `Image` stay in the output between styled runs rather
-        // than degrading to text: `==a [x](u) b==` keeps a live link and
-        // `==a ![i](s) b==` keeps the image paragraph-visible for
-        // `ImageBlockRewriter`.
+      } else if markup is any InlineConvertible || (markup is Image && allowsImagePassthrough) {
+        // `Link` and other convertible nodes stay in the output between
+        // styled runs; a paragraph-level `Image` stays a node so
+        // `ImageBlockRewriter` can hoist it.
         flushRun()
         output.append(markup)
+      } else {
+        // An `Image` deeper than paragraph level or a `SymbolLink` would
+        // be silently dropped at conversion; degrade to its text fallback
+        // so `**==a ![i](s) b==**` keeps "i" inside the styled run.
+        run.append(Text(markup.plainText))
       }
     }
     flushRun()
