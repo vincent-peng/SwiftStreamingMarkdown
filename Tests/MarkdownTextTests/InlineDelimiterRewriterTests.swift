@@ -134,6 +134,31 @@ final class InlineDelimiterRewriterTests: XCTestCase {
     XCTAssertNotEqual(boldFont, plainFont)
   }
 
+  func test_empty_pair_stays_literal() async {
+    let content = await renderedParagraph("a====b")
+    XCTAssertEqual(content?.string, "a====b")
+  }
+
+  func test_highlight_preserves_link() async {
+    let content = await renderedParagraph("==a [x](https://ex.com) b==")
+    XCTAssertEqual(content?.string, "a x b")
+    let link = content?.attribute(.link, at: 2, effectiveRange: nil) as? URL
+    XCTAssertEqual(link?.absoluteString, "https://ex.com")
+    XCTAssertNotNil(background(at: 0, in: content))
+    XCTAssertNotNil(background(at: 4, in: content))
+  }
+
+  func test_highlight_preserves_paragraph_level_image() async {
+    let renderables = await parser.parse(
+      text: "==a ![alt](https://ex.com/i.png) b==",
+      config: .default.withImageConfig(ImageConfig(enabled: true, allowedImageTypes: [.remote(allowedDomains: [])]))
+    ).renderables
+    XCTAssertTrue(renderables.contains { renderable in
+      if case .image = renderable { return true }
+      return false
+    })
+  }
+
   func test_nested_attribute_nodes_compose() async {
     let content = await renderedParagraph("==a <sup>b</sup> c==")
     XCTAssertEqual(content?.string, "a b c")
