@@ -187,6 +187,51 @@ extension Markdown.InlineCode: InlineConvertible {
   }
 }
 
+extension Markdown.InlineAttributes: InlineConvertible {
+
+  /// Attribute keys this renderer understands inside `attributes`. Produced by
+  /// `InlineHTMLRewriter` for tags that have no dedicated Markdown node
+  /// (`<u>`/`<ins>`, `<mark>`, `<sub>`, `<sup>`).
+  private static let enabledKeyRegex = try? Regex(#"(?:^|[,{}\s])([a-zA-Z]+)\s*:\s*true\b"#)
+
+  private var enabledKeys: Set<String> {
+    guard let regex = Self.enabledKeyRegex else { return [] }
+    var keys = Set<String>()
+    for match in attributes.matches(of: regex) {
+      if let key = match.output[1].substring {
+        keys.insert(String(key))
+      }
+    }
+    return keys
+  }
+
+  func convert(attributeContainer: NSAttributeContainer, config: MarkdownRenderConfig) -> NSMutableAttributedString {
+    var container = attributeContainer
+    let font = attributeContainer[.font] as? MDFont ?? config.paragraphStyle.textFonts.normal
+    let keys = enabledKeys
+    if keys.contains("subscript") {
+      container[.font] = font.scaled(by: 0.75)
+      container[.baselineOffset] = -font.pointSize * 0.2
+    }
+    if keys.contains("superscript") {
+      container[.font] = font.scaled(by: 0.75)
+      container[.baselineOffset] = font.pointSize * 0.35
+    }
+    if keys.contains("underline") {
+      container[.underlineStyle] = NSUnderlineStyle.single.rawValue
+      container[.underlineColor] = container[.foregroundColor]
+    }
+    if keys.contains("highlight") {
+      container[.backgroundColor] = MDColor.systemYellow.withAlphaComponent(0.45)
+    }
+    let str = NSMutableAttributedString()
+    self.inlineConvertibleChildren.forEach { convertible in
+      str.append(convertible.convert(attributeContainer: container, config: config))
+    }
+    return str
+  }
+}
+
 extension Markdown.Table.Cell: InlineConvertible {
 
   func convert(attributeContainer: NSAttributeContainer, config: MarkdownRenderConfig) -> NSMutableAttributedString {
