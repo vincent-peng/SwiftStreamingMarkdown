@@ -114,11 +114,12 @@ The renderer targets the subset of CommonMark + GitHub-flavored Markdown that LL
 - [x] Display LaTeX math via `$$ … $$`
 - [x] Inline citation pills
 - [x] Inline HTML formatting tags — `<br>`, `<b>`/`<strong>`, `<i>`/`<em>`, `<s>`/`<del>`/`<strike>`, `<u>`/`<ins>`, `<mark>`, `<sub>`/`<sup>`, `<code>`/`<kbd>`/`<samp>`/`<tt>`, `<a href>`, `<wbr>` (comments are dropped; unsupported or unmatched tags render as literal text)
+- [x] Highlight (`==text==`)
 
 ### Not yet supported
 
 - [ ] Footnotes (`[^1]`)
-- [ ] Highlight (`==text==`), superscript (`^x^`), subscript (`~x~`)
+- [ ] Superscript (`^x^`), subscript (`~x~`)
 - [ ] Block-level raw HTML (`<details>`, `<aside>`, …) — kept inline as text
 - [ ] GitHub alerts (`> [!NOTE]`) — rendered as plain block quotes
 - [ ] Container directives (`::: warning … :::`) and admonitions (`!!! note`)

@@ -15,6 +15,8 @@ public final class MarkdownParserImpl: MarkdownParser {
 
   private let inlineHTMLRewriter = InlineHTMLMarkupPostParsingRewriter()
 
+  private let delimiterRewriter = InlineDelimiterMarkupPostParsingRewriter()
+
   private let imageBlockRewriter = ImageBlockMarkupPostParsingRewriter()
 
   private let latexPreprocessor: LaTexPreProcessor
@@ -42,6 +44,13 @@ public final class MarkdownParserImpl: MarkdownParser {
     }
 
     if let rewrittenDoc = inlineHTMLRewriter.rewriteIfApplicable(document: result.document) {
+      result = MarkdownParseResult(
+        document: rewrittenDoc,
+        speculativeRewritten: result.speculativeRewritten
+      )
+    }
+
+    if let rewrittenDoc = delimiterRewriter.rewriteIfApplicable(document: result.document) {
       result = MarkdownParseResult(
         document: rewrittenDoc,
         speculativeRewritten: result.speculativeRewritten
