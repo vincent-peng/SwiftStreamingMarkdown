@@ -195,6 +195,34 @@ final class InlineHTMLRewriterTests: XCTestCase {
     XCTAssertEqual(content?.string, "a b c")
   }
 
+  func test_block_comment_is_dropped() async {
+    let renderables = await renderables("intro\n\n<!-- note -->\n\noutro")
+    let allText = renderables.compactMap { renderable -> String? in
+      guard case .paragraph(_, let content) = renderable else { return nil }
+      return content.string
+    }.joined()
+    XCTAssertFalse(allText.contains("note"))
+    XCTAssertTrue(allText.contains("intro"))
+    XCTAssertTrue(allText.contains("outro"))
+  }
+
+  func test_image_inside_bold_tag_stays_at_paragraph_level() async {
+    // With image support enabled, `![x](u)` inside `<b>` must not be swallowed.
+    let document = await parser.parse(
+      text: "a <b>![alt](https://x.example/i.png) after</b>",
+      config: .default.withImageConfig(ImageConfig(enabled: true, allowedImageTypes: [.remote(allowedDomains: [])]))
+    )
+    XCTAssertTrue(document.renderables.contains { renderable in
+      if case .image = renderable { return true }
+      return false
+    })
+  }
+
+  func test_nested_link_inside_link_loses_inner_link_keeps_text() async {
+    let content = await renderedParagraph("[a <a href=\"https://inner.example\">inner</a>](https://outer.example)")
+    XCTAssertEqual(content?.string, "a inner")
+  }
+
   func test_deeply_unclosed_tags_do_not_crash() async {
     let opens = String(repeating: "<b>", count: 500)
     let content = await renderedParagraph("a \(opens)x")

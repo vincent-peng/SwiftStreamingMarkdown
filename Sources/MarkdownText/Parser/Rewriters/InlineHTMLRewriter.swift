@@ -50,8 +50,14 @@ final class InlineHTMLRewriter: MarkupRewriter {
 
   /// `HTMLBlock` nodes have no renderable representation; without this they
   /// would be dropped, losing their text entirely. Render the source verbatim
-  /// so `<details>` and friends degrade to readable text.
+  /// so `<details>` and friends degrade to readable text. Comments,
+  /// processing instructions, and declarations are dropped like their inline
+  /// counterparts rather than surfacing as visible text.
   func visitHTMLBlock(_ htmlBlock: HTMLBlock) -> Markup? {
+    let raw = htmlBlock.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+    if raw.hasPrefix("<!--") || raw.hasPrefix("<?") || raw.hasPrefix("<!") {
+      return nil
+    }
     return Paragraph([Text(htmlBlock.rawHTML)])
   }
 
@@ -74,7 +80,13 @@ final class InlineHTMLRewriter: MarkupRewriter {
     // it must be called through a variable; `self` is a class reference here.
     var mutableSelf = self
     guard var visited = mutableSelf.defaultVisit(container) as? Container else { return container }
-    visited.setInlineChildren(process(Array(visited.children)))
+    var children = process(Array(visited.children))
+    // `Link`, `Image`, and `InlineAttributes` only allow `RecurringInlineMarkup`
+    // children; degraded nodes keep their text as a literal fallback.
+    if visited is Link || visited is Image || visited is InlineAttributes {
+      children = children.map { $0 as? (any RecurringInlineMarkup) ?? Text($0.plainText) }
+    }
+    visited.setInlineChildren(children)
     return visited
   }
 
@@ -92,8 +104,9 @@ final class InlineHTMLRewriter: MarkupRewriter {
     // per-open scan on inputs like thousands of unclosed `<b>` tags.
     if depth >= Self.maxDepth {
       return input.compactMap { markup in
-        if let html = markup as? InlineHTML { return Text(html.rawHTML) }
-        return markup as? InlineMarkup
+        guard let html = markup as? InlineHTML else { return markup as? InlineMarkup }
+        if case .comment = classify(html) { return nil }
+        return Text(html.rawHTML)
       }
     }
     var output: [InlineMarkup] = []
@@ -208,11 +221,11 @@ final class InlineHTMLRewriter: MarkupRewriter {
   private func wrapPair(name: String, attributes: String, inner: [InlineMarkup]) -> [InlineMarkup]? {
     switch name {
     case "b", "strong":
-      return [Strong(inner)]
+      return splitOnImages(inner) { Strong($0) }
     case "i", "em":
-      return [Emphasis(inner)]
+      return splitOnImages(inner) { Emphasis($0) }
     case "s", "del", "strike":
-      return [Strikethrough(inner)]
+      return splitOnImages(inner) { Strikethrough($0) }
     case "u", "ins":
       return attributeWrap("underline", inner)
     case "mark":
@@ -230,6 +243,27 @@ final class InlineHTMLRewriter: MarkupRewriter {
     default:
       return nil
     }
+  }
+
+  /// Splits a basic wrapper run around `Image` children: images must reach
+  /// paragraph level for `ImageBlockRewriter` to hoist them into blocks —
+  /// an `Image` nested inside `Strong` would be dropped at conversion.
+  private func splitOnImages(_ inner: [InlineMarkup], wrap: ([InlineMarkup]) -> InlineMarkup) -> [InlineMarkup] {
+    var output: [InlineMarkup] = []
+    var run: [InlineMarkup] = []
+    for markup in inner {
+      if markup is Image {
+        if !run.isEmpty {
+          output.append(wrap(run))
+          run = []
+        }
+        output.append(markup)
+      } else {
+        run.append(markup)
+      }
+    }
+    if !run.isEmpty { output.append(wrap(run)) }
+    return output
   }
 
   /// `InlineAttributes` children must be `RecurringInlineMarkup`. Stacked
@@ -321,7 +355,7 @@ final class InlineHTMLRewriter: MarkupRewriter {
       defer { index = attributes.index(after: index) }
       if character == "h" || character == "H", previousWasBoundary {
         let rest = attributes[index...]
-        if rest.count >= 4, rest.prefix(4).lowercased() == "href" {
+        if rest.prefix(4).lowercased() == "href" {
           var cursor = rest.index(rest.startIndex, offsetBy: 4)
           while cursor < attributes.endIndex, Self.htmlWhitespace.contains(attributes[cursor]) {
             cursor = attributes.index(after: cursor)

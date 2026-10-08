@@ -192,7 +192,7 @@ extension Markdown.InlineAttributes: InlineConvertible {
   /// Attribute keys this renderer understands inside `attributes`. Produced by
   /// `InlineHTMLRewriter` for tags that have no dedicated Markdown node
   /// (`<u>`/`<ins>`, `<mark>`, `<sub>`, `<sup>`).
-  private static let enabledKeyRegex = try? Regex(#"(?:^|[,{}\s])([a-zA-Z]+)\s*:\s*true"#)
+  private static let enabledKeyRegex = try? Regex(#"(?:^|[,{}\s])([a-zA-Z]+)\s*:\s*true\b"#)
 
   private var enabledKeys: Set<String> {
     guard let regex = Self.enabledKeyRegex else { return [] }
