@@ -18,9 +18,7 @@ final class StreamedMarkdownControllerTests: XCTestCase {
   }
 
   private func makeStream() -> (AsyncStream<String>, AsyncStream<String>.Continuation) {
-    var continuation: AsyncStream<String>.Continuation!
-    let stream = AsyncStream<String> { continuation = $0 }
-    return (stream, continuation)
+    return AsyncStream<String>.makeStream(of: String.self)
   }
 
   private func waitForRender(_ controller: StreamedMarkdownController) async {
@@ -60,6 +58,22 @@ final class StreamedMarkdownControllerTests: XCTestCase {
     await controller.task?.value
     XCTAssertEqual(controller.markdownToRender.plainText, "2 * 3")
     await controller.end()
+  }
+
+  func test_cancelled_controller_does_not_republish_on_stream_finish() async {
+    let (stream, continuation) = makeStream()
+    let controller = StreamedMarkdownController(source: StubSource(stream: stream), config: .default)
+    await controller.start()
+
+    continuation.yield("2 * 3")
+    await waitForRender(controller)
+    XCTAssertEqual(controller.markdownToRender.plainText, "2  3")
+
+    await controller.end()
+    continuation.finish()
+    try? await Task.sleep(ms: 50)
+    // The cancelled task must not publish the settled literal render.
+    XCTAssertEqual(controller.markdownToRender.plainText, "2  3")
   }
 
   func test_partial_table_header_is_hidden_until_complete() async {

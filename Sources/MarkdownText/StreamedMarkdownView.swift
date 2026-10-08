@@ -97,6 +97,7 @@ final class StreamedMarkdownController: ObservableObject {
       }
       // The stream completed: re-render the final snapshot without speculative
       // rewriting so deliberate trailing markers are not eaten.
+      if Task.isCancelled { return }
       if let lastText {
         let renderable = await self.parser.parse(text: lastText, config: self.config)
         if Task.isCancelled { return }
