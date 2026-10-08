@@ -27,6 +27,10 @@ final class InlineDelimiterRewriterTests: XCTestCase {
     content?.attribute(.backgroundColor, at: index, effectiveRange: nil) as? MDColor
   }
 
+  private func baseline(at index: Int, in content: NSMutableAttributedString?) -> CGFloat {
+    CGFloat((content?.attribute(.baselineOffset, at: index, effectiveRange: nil) as? NSNumber)?.doubleValue ?? 0)
+  }
+
   // MARK: - Pairing
 
   func test_simple_highlight() async {
@@ -128,6 +132,16 @@ final class InlineDelimiterRewriterTests: XCTestCase {
     let plainFont = content?.attribute(.font, at: 0, effectiveRange: nil) as? MDFont
     XCTAssertNotNil(boldFont)
     XCTAssertNotEqual(boldFont, plainFont)
+  }
+
+  func test_nested_attribute_nodes_compose() async {
+    let content = await renderedParagraph("==a <sup>b</sup> c==")
+    XCTAssertEqual(content?.string, "a b c")
+    for index in 0..<5 {
+      XCTAssertNotNil(background(at: index, in: content), "expected highlight at \(index)")
+    }
+    XCTAssertGreaterThan(baseline(at: 2, in: content), 0)
+    XCTAssertEqual(baseline(at: 0, in: content), 0)
   }
 
   // MARK: - Constrained containers and code spans
