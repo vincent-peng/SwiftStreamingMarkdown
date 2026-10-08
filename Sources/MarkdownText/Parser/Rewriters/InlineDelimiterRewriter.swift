@@ -25,10 +25,9 @@ import Markdown
 /// paired at their own level: their children must stay
 /// `RecurringInlineMarkup`, so `==` there remains literal.
 ///
-/// Known limitation: a backslash-escaped `\==` arrives as a literal `=` in
-/// `Text` content because cmark strips the escape during parsing, so
-/// `\==x==` still highlights. The two forms are indistinguishable at this
-/// layer.
+/// A backslash-escaped `\==` arrives as its own `Text` node because cmark
+/// emits escaped characters separately, so `\==x==` stays literal — the
+/// escape works.
 final class InlineDelimiterRewriter: MarkupRewriter {
 
   /// Describes one inline delimiter pair and the attribute it produces.
@@ -183,11 +182,24 @@ final class InlineDelimiterRewriter: MarkupRewriter {
         runEnd += 1
       }
       var runStart = index
-      while runStart > 0, case .remainder = pieces[runStart - 1] {
+      guard case .marker(let runSpecIndex, _, _) = pieces[index] else {
+        index += 1
+        continue
+      }
+      while runStart > 0, case .remainder(let string) = pieces[runStart - 1],
+            specs[runSpecIndex].marker.contains(string) {
         runStart -= 1
       }
-      let canClose = runStart > 0 && lastCharacter(of: pieces[runStart - 1])?.isWhitespace == false
-      let canOpen = runEnd < pieces.count && firstCharacter(of: pieces[runEnd])?.isWhitespace == false
+      let previous = runStart > 0 ? lastCharacter(of: pieces[runStart - 1]) : nil
+      let next = runEnd < pieces.count ? firstCharacter(of: pieces[runEnd]) : nil
+      let lastWS = previous?.isWhitespace ?? false
+      let lastPunct = previous.map(Self.isDelimiterPunctuation) ?? false
+      let nextWS = next?.isWhitespace ?? false
+      let nextPunct = next.map(Self.isDelimiterPunctuation) ?? false
+      // markdown-it's left/right-flanking rules; checking whitespace alone
+      // would pair `a==(b)==c`, which the reference renderer keeps literal.
+      let canClose = !lastWS && (!lastPunct || nextWS || nextPunct)
+      let canOpen = !nextWS && (!nextPunct || lastWS || lastPunct)
       for markerIndex in index..<runEnd {
         guard case .marker(let specIndex, _, _) = pieces[markerIndex] else { continue }
         pieces[markerIndex] = .marker(specIndex: specIndex, canOpen: canOpen, canClose: canClose)
@@ -198,13 +210,17 @@ final class InlineDelimiterRewriter: MarkupRewriter {
 
   /// Pairs each closer with the most recent unmatched opener of the same
   /// spec and returns `open index -> close index`. A marker that can both
-  /// open and close prefers closing when an opener exists.
+  /// open and close prefers closing when an opener exists, except an
+  /// immediately adjacent one: markdown-it's jump rule keeps `====x====`
+  /// pairing outer-to-inner instead of collapsing each run's two markers
+  /// onto each other with nothing between them.
   private func pairedCloses(in pieces: [Piece]) -> [Int: Int] {
     var openers: [[Int]] = specs.map { _ in [] }
     var closeForOpen: [Int: Int] = [:]
     for (index, piece) in pieces.enumerated() {
       guard case .marker(let specIndex, let canOpen, let canClose) = piece else { continue }
-      if canClose, let openIndex = openers[specIndex].popLast() {
+      if canClose, let openIndex = openers[specIndex].last, index - openIndex > 1 {
+        openers[specIndex].removeLast()
         closeForOpen[openIndex] = index
       } else if canOpen {
         openers[specIndex].append(index)
@@ -241,42 +257,50 @@ final class InlineDelimiterRewriter: MarkupRewriter {
         }
         // `remainder` pieces at the wrap boundary belong to the consumed
         // markers' own runs, so they emit outside: `===x===` highlights `x`
-        // and leaves one literal `=` on each side.
+        // and leaves one literal `=` on each side. A remainder whose char
+        // differs from the spec's marker is foreign interior content and
+        // stays inside the range (`=^` remainders never belong to a `^`
+        // run, which can't produce remainders at all).
         var innerStart = index + 1
         var innerEnd = close
         var leading: [String] = []
-        while innerStart < innerEnd, case .remainder(let string) = pieces[innerStart] {
+        while innerStart < innerEnd, case .remainder(let string) = pieces[innerStart],
+              spec.marker.contains(string) {
           leading.append(string)
           innerStart += 1
         }
         var trailing: [String] = []
-        while innerEnd > innerStart, case .remainder(let string) = pieces[innerEnd - 1] {
+        while innerEnd > innerStart, case .remainder(let string) = pieces[innerEnd - 1],
+              spec.marker.contains(string) {
           trailing.insert(string, at: 0)
           innerEnd -= 1
         }
         let inner = emit(pieces, in: innerStart..<innerEnd, closeForOpen: closeForOpen, depth: depth + 1)
         // An empty inner range (`a====b`) means the markers delimit nothing;
-        // emit them literally so the `=`s are not swallowed.
+        // emit in piece order so nothing is lost or reordered.
         guard !inner.isEmpty else {
+          output.append(Text(spec.marker))
           output.append(contentsOf: leading.map { Text($0) })
-          output.append(Text(spec.marker))
-          output.append(Text(spec.marker))
           output.append(contentsOf: trailing.map { Text($0) })
+          output.append(Text(spec.marker))
           index = close + 1
           continue
         }
         let containsWhitespace = !spec.allowsInnerWhitespace && inner.contains { markup in
           markup.plainText.contains { $0.isWhitespace }
         }
-        output.append(contentsOf: leading.map { Text($0) })
         if spec.allowsInnerWhitespace || !containsWhitespace {
+          output.append(contentsOf: leading.map { Text($0) })
           output.append(contentsOf: attributeWrap("\(spec.attribute):true", inner))
+          output.append(contentsOf: trailing.map { Text($0) })
         } else {
+          // Rejected pairs emit literally in piece order.
           output.append(Text(spec.marker))
+          output.append(contentsOf: leading.map { Text($0) })
           output.append(contentsOf: inner)
+          output.append(contentsOf: trailing.map { Text($0) })
           output.append(Text(spec.marker))
         }
-        output.append(contentsOf: trailing.map { Text($0) })
         index = close + 1
       }
     }
@@ -344,6 +368,17 @@ final class InlineDelimiterRewriter: MarkupRewriter {
       found = true
     }
     return found ? merged : nil
+  }
+
+  /// ASCII punctuation matching markdown-it's `isPunctChar`
+  /// (`Character.isPunctuation` misses symbols like `` ` ``, `~`, `^`, `=`,
+  /// and `$`, which markdown-it counts as flanking punctuation).
+  private static let punctuationCharacters = Set<Character>(
+    "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+  )
+
+  private static func isDelimiterPunctuation(_ character: Character) -> Bool {
+    punctuationCharacters.contains(character)
   }
 
   private func firstCharacter(of piece: Piece) -> Character? {
