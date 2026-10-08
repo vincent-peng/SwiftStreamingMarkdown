@@ -55,6 +55,10 @@ final class InlineDelimiterRewriter: MarkupRewriter {
 
     /// `==highlight==`; inner whitespace is allowed.
     static let highlight = DelimiterSpec(marker: "==", attribute: "highlight", allowsInnerWhitespace: true)
+
+    /// `^superscript^`; inner whitespace is rejected per Pandoc's rule, so
+    /// `x^2` and `a^b c^d` stay literal.
+    static let superscript = DelimiterSpec(marker: "^", attribute: "superscript", allowsInnerWhitespace: false)
   }
 
   /// Maximum nested-pair depth transformed before markers are emitted
