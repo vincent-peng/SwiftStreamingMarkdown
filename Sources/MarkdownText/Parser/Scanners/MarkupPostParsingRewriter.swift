@@ -70,7 +70,7 @@ final class InlineHTMLMarkupPostParsingRewriter: MarkupPostParsingRewriter {
 /// repair.
 final class InlineDelimiterMarkupPostParsingRewriter: MarkupPostParsingRewriter {
 
-  private static let specs: [InlineDelimiterRewriter.DelimiterSpec] = [.highlight]
+  private static let specs: [InlineDelimiterRewriter.DelimiterSpec] = [.highlight, .superscript]
 
   func rewriteIfApplicable(document: Document) -> Document? {
     guard InlineDelimiterRewriter.containsDelimiter(document, specs: Self.specs) else { return nil }

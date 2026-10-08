@@ -31,6 +31,49 @@ final class InlineDelimiterRewriterTests: XCTestCase {
     CGFloat((content?.attribute(.baselineOffset, at: index, effectiveRange: nil) as? NSNumber)?.doubleValue ?? 0)
   }
 
+  // MARK: - Superscript
+
+  func test_simple_superscript() async {
+    let content = await renderedParagraph("a ^b^ c")
+    XCTAssertEqual(content?.string, "a b c")
+    XCTAssertGreaterThan(baseline(at: 2, in: content), 0)
+    XCTAssertEqual(baseline(at: 0, in: content), 0)
+  }
+
+  func test_intraword_superscript() async {
+    let content = await renderedParagraph("a^b^c")
+    XCTAssertEqual(content?.string, "abc")
+    XCTAssertGreaterThan(baseline(at: 1, in: content), 0)
+    XCTAssertEqual(baseline(at: 0, in: content), 0)
+  }
+
+  func test_caret_without_closer_stays_literal() async {
+    let content = await renderedParagraph("x^2 and 2^10")
+    XCTAssertEqual(content?.string, "x^2 and 2^10")
+  }
+
+  func test_superscript_rejects_inner_whitespace() async {
+    let content = await renderedParagraph("a ^b c^ d")
+    XCTAssertEqual(content?.string, "a ^b c^ d")
+  }
+
+  func test_superscript_unclosed_stays_literal() async {
+    let content = await renderedParagraph("a ^b")
+    XCTAssertEqual(content?.string, "a ^b")
+  }
+
+  func test_superscript_inside_code_span_stays_literal() async {
+    let content = await renderedParagraph("`^x^`")
+    XCTAssertEqual(content?.string, "^x^")
+  }
+
+  func test_superscript_inside_highlight_keeps_both() async {
+    let content = await renderedParagraph("==a ^b^==")
+    XCTAssertEqual(content?.string, "a b")
+    XCTAssertNotNil(background(at: 0, in: content))
+    XCTAssertGreaterThan(baseline(at: 2, in: content), 0)
+  }
+
   // MARK: - Pairing
 
   func test_simple_highlight() async {
