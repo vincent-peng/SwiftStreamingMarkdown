@@ -6,43 +6,76 @@
 @testable import SwiftStreamingMarkdown
 import XCTest
 
+@MainActor
 final class StreamedMarkdownControllerTests: XCTestCase {
 
   private final class StubSource: StreamedMarkdownSource {
     let text: AsyncStream<String>
 
-    init(snapshots: [String]) {
-      text = AsyncStream { continuation in
-        for snapshot in snapshots {
-          continuation.yield(snapshot)
-        }
-        continuation.finish()
-      }
+    init(stream: AsyncStream<String>) {
+      self.text = stream
     }
   }
 
-  private func renderOnce(snapshots: [String], config: MarkdownRenderConfig = .default) async -> RenderableDocument {
-    let controller = StreamedMarkdownController(source: StubSource(snapshots: snapshots), config: config)
-    await controller.start()
+  private func makeStream() -> (AsyncStream<String>, AsyncStream<String>.Continuation) {
+    var continuation: AsyncStream<String>.Continuation!
+    let stream = AsyncStream<String> { continuation = $0 }
+    return (stream, continuation)
+  }
+
+  private func waitForRender(_ controller: StreamedMarkdownController) async {
     for _ in 0..<200 where controller.markdownToRender.renderables.isEmpty {
       try? await Task.sleep(ms: 5)
     }
-    await controller.end()
-    return controller.markdownToRender
   }
 
-  func test_partial_trailing_strong_is_speculatively_closed() async {
-    let rendered = await renderOnce(snapshots: ["Yeah, this is **cool"])
-    XCTAssertEqual(rendered.plainText, "Yeah, this is cool")
+  func test_partial_trailing_strong_is_speculatively_closed_midstream() async {
+    let (stream, continuation) = makeStream()
+    let controller = StreamedMarkdownController(source: StubSource(stream: stream), config: .default)
+    await controller.start()
+
+    continuation.yield("Yeah, this is **cool")
+    await waitForRender(controller)
+    XCTAssertEqual(controller.markdownToRender.plainText, "Yeah, this is cool")
+
+    continuation.yield("Yeah, this is **cooler**.")
+    continuation.finish()
+    await controller.task?.value
+    XCTAssertEqual(controller.markdownToRender.plainText, "Yeah, this is cooler.")
+    await controller.end()
+  }
+
+  func test_literal_trailing_marker_is_restored_when_stream_completes() async {
+    let (stream, continuation) = makeStream()
+    let controller = StreamedMarkdownController(source: StubSource(stream: stream), config: .default)
+    await controller.start()
+
+    // Mid-stream the trailing "*" is speculatively treated as emphasis.
+    continuation.yield("2 * 3")
+    await waitForRender(controller)
+    XCTAssertEqual(controller.markdownToRender.plainText, "2  3")
+
+    // Once the stream finishes the final snapshot re-renders literally.
+    continuation.finish()
+    await controller.task?.value
+    XCTAssertEqual(controller.markdownToRender.plainText, "2 * 3")
+    await controller.end()
   }
 
   func test_partial_table_header_is_hidden_until_complete() async {
-    let rendered = await renderOnce(snapshots: ["intro\n\n| Month | Savings |"])
-    XCTAssertFalse(rendered.plainText.contains("Month"))
-  }
+    let (stream, continuation) = makeStream()
+    let controller = StreamedMarkdownController(source: StubSource(stream: stream), config: .default)
+    await controller.start()
 
-  func test_complete_markdown_renders_unchanged() async {
-    let rendered = await renderOnce(snapshots: ["Hello **world**"])
-    XCTAssertEqual(rendered.plainText, "Hello world")
+    continuation.yield("intro\n\n| Month | Savings |")
+    await waitForRender(controller)
+    XCTAssertTrue(controller.markdownToRender.plainText.contains("intro"))
+    XCTAssertFalse(controller.markdownToRender.plainText.contains("Month"))
+
+    continuation.yield("intro\n\n| Month | Savings |\n| ----- | ------- |\n| Jan | 100 |")
+    continuation.finish()
+    await controller.task?.value
+    XCTAssertTrue(controller.markdownToRender.plainText.contains("Month"))
+    await controller.end()
   }
 }
