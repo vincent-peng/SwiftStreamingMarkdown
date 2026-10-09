@@ -31,6 +31,105 @@ final class InlineDelimiterRewriterTests: XCTestCase {
     CGFloat((content?.attribute(.baselineOffset, at: index, effectiveRange: nil) as? NSNumber)?.doubleValue ?? 0)
   }
 
+  // MARK: - Superscript
+
+  func test_simple_superscript() async {
+    let content = await renderedParagraph("a ^b^ c")
+    XCTAssertEqual(content?.string, "a b c")
+    XCTAssertGreaterThan(baseline(at: 2, in: content), 0)
+    XCTAssertEqual(baseline(at: 0, in: content), 0)
+  }
+
+  func test_intraword_superscript() async {
+    let content = await renderedParagraph("a^b^c")
+    XCTAssertEqual(content?.string, "abc")
+    XCTAssertGreaterThan(baseline(at: 1, in: content), 0)
+    XCTAssertEqual(baseline(at: 0, in: content), 0)
+  }
+
+  func test_caret_without_closer_stays_literal() async {
+    let content = await renderedParagraph("x^2 and 2^10")
+    XCTAssertEqual(content?.string, "x^2 and 2^10")
+  }
+
+  func test_superscript_rejects_inner_whitespace() async {
+    let content = await renderedParagraph("a ^b c^ d")
+    XCTAssertEqual(content?.string, "a ^b c^ d")
+  }
+
+  func test_superscript_unclosed_stays_literal() async {
+    let content = await renderedParagraph("a ^b")
+    XCTAssertEqual(content?.string, "a ^b")
+  }
+
+  func test_superscript_inside_code_span_stays_literal() async {
+    let content = await renderedParagraph("`^x^`")
+    XCTAssertEqual(content?.string, "^x^")
+  }
+
+  func test_superscript_inside_highlight_keeps_both() async {
+    let content = await renderedParagraph("==a ^b^==")
+    XCTAssertEqual(content?.string, "a b")
+    XCTAssertNotNil(background(at: 0, in: content))
+    XCTAssertGreaterThan(baseline(at: 2, in: content), 0)
+  }
+
+  // MARK: - Multi-spec interactions
+
+  func test_crossing_pairs_stay_literal_and_intact() async {
+    // A `^` pair cannot close inside the `==` range it crossed; the `==` pair still wraps.
+    let content = await renderedParagraph("==a ^b== c^")
+    XCTAssertEqual(content?.string, "a ^b c^")
+    for index in 0..<4 {
+      XCTAssertNotNil(background(at: index, in: content), "expected highlight at \(index)")
+    }
+    XCTAssertNil(background(at: 4, in: content))
+    XCTAssertEqual(baseline(at: 0, in: content), 0)
+  }
+
+  func test_crossing_pairs_reversed_spec_order() async {
+    // The `^` inner range "a ==b" contains a space, which superscript
+    // rejects — both pairs emit literally and no text is lost or doubled.
+    let content = await renderedParagraph("^a ==b^ c==")
+    XCTAssertEqual(content?.string, "^a ==b^ c==")
+    XCTAssertEqual(baseline(at: 0, in: content), 0)
+    XCTAssertNil(background(at: 0, in: content))
+  }
+
+  func test_footnote_like_text_stays_literal() async {
+    // LLMs emit `[^n]` footnote-style references; `^` must not open after `[`.
+    let content = await renderedParagraph("[^1][^2]")
+    XCTAssertEqual(content?.string, "[^1][^2]")
+    XCTAssertEqual(baseline(at: 0, in: content), 0)
+  }
+
+  func test_superscript_after_bracket_reference_still_works() async {
+    // Blocking `[^` only suppresses that opener; a later clean pair still wraps.
+    let content = await renderedParagraph("[^1] x^2^")
+    XCTAssertEqual(content?.string, "[^1] x2")
+    XCTAssertGreaterThan(baseline(at: 6, in: content), 0)
+  }
+
+  func test_caret_after_equals_remainder_can_open() async {
+    // The `=` between `[` and `^` is foreign interior content, so `[^`'s
+    // block does not reach through it; `^y^` pairs normally.
+    let content = await renderedParagraph("x[=^y^")
+    XCTAssertEqual(content?.string, "x[=y")
+    XCTAssertGreaterThan(baseline(at: 3, in: content), 0)
+  }
+
+  func test_caret_equals_caret_stays_literal() async {
+    let content = await renderedParagraph("^=^")
+    XCTAssertEqual(content?.string, "^=^")
+  }
+
+  func test_whitespace_reject_keeps_piece_order() async {
+    // A rejected pair emits literally in source order; the interior `=`
+    // must not migrate across the markers.
+    let content = await renderedParagraph("a ^=a b^")
+    XCTAssertEqual(content?.string, "a ^=a b^")
+  }
+
   // MARK: - Pairing
 
   func test_simple_highlight() async {

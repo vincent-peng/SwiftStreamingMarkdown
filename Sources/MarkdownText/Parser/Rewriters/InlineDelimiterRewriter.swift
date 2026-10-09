@@ -40,8 +40,18 @@ final class InlineDelimiterRewriter: MarkupRewriter {
     /// markers of a pair like `^a b^` literal.
     let allowsInnerWhitespace: Bool
 
+    /// Characters that prevent a marker from opening when they precede it.
+    /// `^` right after `[` stays literal so `[^note]`-style text — which
+    /// LLMs emit for footnote-like references — is not consumed as
+    /// superscript (`[^1][^2]` would otherwise pair `1][`).
+    let openerBlockedAfter: Set<Character>
+
     /// `==highlight==`; inner whitespace is allowed.
-    static let highlight = DelimiterSpec(marker: "==", attribute: "highlight", allowsInnerWhitespace: true)
+    static let highlight = DelimiterSpec(marker: "==", attribute: "highlight", allowsInnerWhitespace: true, openerBlockedAfter: [])
+
+    /// `^superscript^`; inner whitespace is rejected per Pandoc's rule, so
+    /// `x^2` and `a^b c^d` stay literal.
+    static let superscript = DelimiterSpec(marker: "^", attribute: "superscript", allowsInnerWhitespace: false, openerBlockedAfter: ["["])
   }
 
   /// Maximum nested-pair depth transformed before markers are emitted
@@ -203,9 +213,10 @@ final class InlineDelimiterRewriter: MarkupRewriter {
       // markdown-it's left/right-flanking rules; checking whitespace alone
       // would pair `a==(b)==c`, which the reference renderer keeps literal.
       let canClose = !lastWS && (!lastPunct || nextWS || nextPunct)
-      let canOpen = !nextWS && (!nextPunct || lastWS || lastPunct)
       for markerIndex in index..<runEnd {
         guard case .marker(let specIndex, _, _) = pieces[markerIndex] else { continue }
+        let blocked = previous.map { specs[specIndex].openerBlockedAfter.contains($0) } ?? false
+        let canOpen = !nextWS && (!nextPunct || lastWS || lastPunct) && !blocked
         pieces[markerIndex] = .marker(specIndex: specIndex, canOpen: canOpen, canClose: canClose)
       }
       index = runEnd
