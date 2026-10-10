@@ -23,16 +23,22 @@ import Markdown
 ///
 /// `Link`, `Image`, and `InlineAttributes` containers are visited but never
 /// paired at their own level: their children must stay
-/// `RecurringInlineMarkup`, so `==` there remains literal.
+/// `RecurringInlineMarkup`, so `==` there remains literal. Nested containers
+/// inside them still pair — `[*==x==*](u)` renders highlighted italic link
+/// text.
 ///
-/// A backslash-escaped `\==` arrives as its own `Text` node because cmark
-/// emits escaped characters separately, so `\==x==` stays literal — the
-/// escape works.
+/// Backslash escapes and entities (`\==`, `\^`, `&#94;`) stay literal: cmark
+/// merges decoded characters into the surrounding `Text` node, and `tokenize`
+/// detects the mismatch between the node's source span and its decoded
+/// contents so escaped markers are never consumed.
 final class InlineDelimiterRewriter: MarkupRewriter {
 
   /// Describes one inline delimiter pair and the attribute it produces.
   struct DelimiterSpec {
-    /// The repeated-character marker text, e.g. `"=="`.
+    /// The repeated-character marker text, e.g. `"=="`. `tokenize` assumes a
+    /// single repeated character (`run % marker.count`) and matches specs by
+    /// `marker.first`, so markers must be one repeated character and distinct
+    /// in their first character across specs.
     let marker: String
     /// The `InlineAttributes` key set to `true` on wrapped content.
     let attribute: String
@@ -45,6 +51,14 @@ final class InlineDelimiterRewriter: MarkupRewriter {
     /// LLMs emit for footnote-like references — is not consumed as
     /// superscript (`[^1][^2]` would otherwise pair `1][`).
     let openerBlockedAfter: Set<Character>
+
+    init(marker: String, attribute: String, allowsInnerWhitespace: Bool, openerBlockedAfter: Set<Character>) {
+      precondition(!marker.isEmpty && marker.allSatisfy { $0 == marker.first })
+      self.marker = marker
+      self.attribute = attribute
+      self.allowsInnerWhitespace = allowsInnerWhitespace
+      self.openerBlockedAfter = openerBlockedAfter
+    }
 
     /// `==highlight==`; inner whitespace is allowed.
     static let highlight = DelimiterSpec(marker: "==", attribute: "highlight", allowsInnerWhitespace: true, openerBlockedAfter: [])
@@ -62,6 +76,9 @@ final class InlineDelimiterRewriter: MarkupRewriter {
   private let specs: [DelimiterSpec]
 
   init(specs: [DelimiterSpec]) {
+    // Specs are matched by `marker.first`, so a shared first character would
+    // make the later spec unreachable.
+    precondition(Set(specs.map { $0.marker.first }).count == specs.count)
     self.specs = specs
   }
 
@@ -101,7 +118,10 @@ final class InlineDelimiterRewriter: MarkupRewriter {
     if visited is Link || visited is Image || visited is InlineAttributes {
       return visited
     }
-    visited.setInlineChildren(process(Array(visited.children), allowsImagePassthrough: visited is Paragraph))
+    visited.setInlineChildren(process(
+      Array(visited.children),
+      allowsImagePassthrough: (visited as? Paragraph)?.parent is Document
+    ))
     return visited
   }
 
@@ -117,10 +137,11 @@ final class InlineDelimiterRewriter: MarkupRewriter {
   }
 
   /// Pairs the container's direct children. `allowsImagePassthrough` is
-  /// true only at paragraph level, where `ImageBlockRewriter` can hoist a
-  /// paragraph-level `Image` out of a wrap; deeper containers would drop
-  /// the node at conversion. When no marker pair exists the input passes
-  /// through unchanged so untouched subtrees keep identity.
+  /// true only for top-level paragraphs — the only place
+  /// `ImageBlockRewriter` can hoist an `Image` out of a wrap; inside deeper
+  /// containers the node would be dropped at conversion, so it degrades to
+  /// text instead. When no marker pair exists the input passes through
+  /// unchanged so untouched subtrees keep identity.
   private func process(_ input: [Markup], allowsImagePassthrough: Bool) -> [InlineMarkup] {
     var pieces = tokenize(input)
     applyFlanking(&pieces)
@@ -147,6 +168,17 @@ final class InlineDelimiterRewriter: MarkupRewriter {
         continue
       }
       let string = text.string
+      // A `Text` node whose source span is wider than its decoded contents
+      // holds escapes or entities (`\==`, `&#94;`, `\\`): cmark merges them
+      // with plain text, so which characters were escaped can't be told
+      // apart without the source. The whole node stays literal rather than
+      // consuming escaped markers; source columns count UTF-8 bytes.
+      if let range = text.range,
+         range.lowerBound.line != range.upperBound.line
+           || range.upperBound.column - range.lowerBound.column != string.utf8.count {
+        pieces.append(.text(string))
+        continue
+      }
       var index = string.startIndex
       var literalStart = index
       while index < string.endIndex {
@@ -192,6 +224,10 @@ final class InlineDelimiterRewriter: MarkupRewriter {
         continue
       }
       var runEnd = index + 1
+      // Adjacent markers of any spec share one flanking run — a deliberate
+      // divergence from markdown-it, which computes flanking per marker
+      // type. Sharing the run is what lets `^==x==^`-style mixed nesting
+      // pair correctly at both levels.
       while runEnd < pieces.count, case .marker = pieces[runEnd] {
         runEnd += 1
       }
@@ -382,6 +418,8 @@ final class InlineDelimiterRewriter: MarkupRewriter {
   /// Union of `base` and the inner node's keys (`"a:true"` comma-separated
   /// contents without braces). Returns `nil` when the inner attribute string
   /// holds no recognized keys, so the node can pass through unchanged.
+  /// Anything the regex doesn't recognize is dropped from the merged result,
+  /// so producers must emit `name:true` entries only.
   private func mergedKeys(_ base: String, inner: String) -> String? {
     guard let regex = Self.enabledKeyRegex else { return nil }
     var merged = base
