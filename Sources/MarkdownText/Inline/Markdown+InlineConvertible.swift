@@ -210,11 +210,9 @@ extension Markdown.InlineAttributes: InlineConvertible {
     let font = attributeContainer[.font] as? MDFont ?? config.paragraphStyle.textFonts.normal
     let keys = enabledKeys
     if keys.contains("subscript") {
-      container[.font] = font.scaled(by: 0.75)
       container[.baselineOffset] = -font.pointSize * 0.2
     }
     if keys.contains("superscript") {
-      container[.font] = font.scaled(by: 0.75)
       container[.baselineOffset] = font.pointSize * 0.35
     }
     if keys.contains("underline") {
@@ -227,6 +225,19 @@ extension Markdown.InlineAttributes: InlineConvertible {
     let str = NSMutableAttributedString()
     self.inlineConvertibleChildren.forEach { convertible in
       str.append(convertible.convert(attributeContainer: container, config: config))
+    }
+    if keys.contains("subscript") || keys.contains("superscript") {
+      // Scale the produced runs rather than the container font: inner
+      // converters (`Strong`, `Emphasis`, `InlineCode`) overwrite `.font`
+      // with their own variants, which would leave e.g. `<sup><b>x</b></sup>`
+      // at full size.
+      var scaled: [(NSRange, MDFont)] = []
+      str.enumerateAttribute(.font, in: NSRange(location: 0, length: str.length)) { value, range, _ in
+        scaled.append((range, (value as? MDFont) ?? font))
+      }
+      for (range, base) in scaled {
+        str.addAttribute(.font, value: base.scaled(by: 0.75), range: range)
+      }
     }
     return str
   }

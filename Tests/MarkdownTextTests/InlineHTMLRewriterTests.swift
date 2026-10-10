@@ -190,6 +190,21 @@ final class InlineHTMLRewriterTests: XCTestCase {
     XCTAssertEqual(link?.absoluteString, "https://x.example")
   }
 
+  func test_sup_tag_scales_bold_text_either_nesting_order() async {
+    // Inner converters overwrite `.font` with their own variants, so the
+    // shrink must be applied to the produced runs — `<sup><b>` used to stay
+    // full-size.
+    for input in ["a <sup><b>x</b></sup>", "a <b><sup>x</sup></b>"] {
+      let content = await renderedParagraph(input)
+      XCTAssertEqual(content?.string, "a x")
+      let innerFont = (content?.attribute(.font, at: 2, effectiveRange: nil) as? MDFont)?.pointSize
+      let plainFont = (content?.attribute(.font, at: 0, effectiveRange: nil) as? MDFont)?.pointSize
+      XCTAssertNotNil(innerFont)
+      XCTAssertNotNil(plainFont)
+      XCTAssertLessThan(innerFont ?? .infinity, plainFont ?? 0)
+    }
+  }
+
   func test_code_tag_flattens_nested_inline_code() async {
     let content = await renderedParagraph("<code>a `b` c</code>")
     XCTAssertEqual(content?.string, "a b c")
