@@ -186,6 +186,15 @@ final class InlineDelimiterRewriterTests: XCTestCase {
     })
   }
 
+  func test_image_in_quoted_paragraph_degrades_to_alt_text() async {
+    // `ImageBlockRewriter` only hoists top-level paragraphs, so an Image
+    // inside a block quote can't stay a node — it degrades to its alt text.
+    let document = await parser.parse(text: "> ==a ![i](https://ex.com/i.png) b==")
+    let dump = document.debugDescription()
+    XCTAssertTrue(dump.contains("Text \"i\""), dump)
+    XCTAssertFalse(dump.contains("Image"), dump)
+  }
+
   func test_nested_attribute_nodes_compose() async {
     let content = await renderedParagraph("==a <sup>b</sup> c==")
     XCTAssertEqual(content?.string, "a b c")
@@ -208,6 +217,21 @@ final class InlineDelimiterRewriterTests: XCTestCase {
   func test_marker_inside_code_span_stays_literal() async {
     let content = await renderedParagraph("`==x==`")
     XCTAssertEqual(content?.string, "==x==")
+  }
+
+  func test_escaped_marker_stays_literal() async {
+    // cmark merges `\=` into the surrounding `Text` node; a source-span
+    // check keeps the whole node literal rather than highlighting `x`.
+    let content = await renderedParagraph("a \\==x== b")
+    XCTAssertEqual(content?.string, "a ==x== b")
+    XCTAssertNil(background(at: 4, in: content))
+  }
+
+  func test_entity_marker_stays_literal() async {
+    // `&#61;` decodes to `=`; entity-bearing nodes stay literal.
+    let content = await renderedParagraph("&#61;&#61;x&#61;&#61;")
+    XCTAssertEqual(content?.string, "==x==")
+    XCTAssertNil(background(at: 0, in: content))
   }
 
   // MARK: - Other blocks
