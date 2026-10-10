@@ -120,7 +120,7 @@ The renderer targets the subset of CommonMark + GitHub-flavored Markdown that LL
 ### Not yet supported
 
 - [ ] Footnotes (`[^1]`)
-- [ ] Subscript (`~x~`)
+- [ ] Subscript — the `<sub>` tag renders it; `~x~` stays strikethrough per GFM (cmark treats single `~` as strike)
 - [ ] Block-level raw HTML (`<details>`, `<aside>`, …) — kept inline as text
 - [ ] GitHub alerts (`> [!NOTE]`) — rendered as plain block quotes
 - [ ] Container directives (`::: warning … :::`) and admonitions (`!!! note`)
