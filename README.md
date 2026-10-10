@@ -113,7 +113,7 @@ The renderer targets the subset of CommonMark + GitHub-flavored Markdown that LL
 - [x] Inline LaTeX math via `\( … \)`
 - [x] Display LaTeX math via `$$ … $$`
 - [x] Inline citation pills
-- [x] Inline HTML formatting tags — `<br>`, `<b>`/`<strong>`, `<i>`/`<em>`, `<s>`/`<del>`/`<strike>`, `<u>`/`<ins>`, `<mark>`, `<sub>`/`<sup>`, `<code>`/`<kbd>`/`<samp>`/`<tt>`, `<a href>`, `<wbr>` (comments are dropped; unsupported or unmatched tags render as literal text)
+- [x] Inline HTML formatting tags — `<br>`, `<b>`/`<strong>`, `<i>`/`<em>`, `<s>`/`<del>`/`<strike>`, `<u>`/`<ins>`, `<mark>`, `<sub>`/`<sup>`, `<code>`/`<kbd>`/`<samp>`/`<tt>`, `<a href>`, `<wbr>` (comments are dropped; unclosed open tags auto-close like browsers; unsupported or unmatched closing tags render as literal text)
 - [x] Highlight (`==text==`)
 - [x] Superscript (`^x^`)
 
