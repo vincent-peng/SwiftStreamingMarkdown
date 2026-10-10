@@ -74,6 +74,42 @@ final class InlineDelimiterRewriterTests: XCTestCase {
     XCTAssertGreaterThan(baseline(at: 2, in: content), 0)
   }
 
+  func test_escaped_caret_stays_literal() async {
+    // A single-character marker can't rely on run-length remainders the way
+    // `==` can; the source-span check keeps `\^` literal.
+    let content = await renderedParagraph("a \\^x^ b")
+    XCTAssertEqual(content?.string, "a ^x^ b")
+    XCTAssertEqual(baseline(at: 3, in: content), 0)
+  }
+
+  func test_entity_caret_stays_literal() async {
+    // `&#94;` decodes to `^`; entity-bearing nodes stay literal.
+    let content = await renderedParagraph("&#94;x&#94;")
+    XCTAssertEqual(content?.string, "^x^")
+    XCTAssertEqual(baseline(at: 1, in: content), 0)
+  }
+
+  func test_punctuation_boundary_superscript_stays_literal() async {
+    // Deliberate markdown-it flanking: `^` before `(` can't open after a
+    // word character, so `x^(n)^` stays literal (Pandoc would superscript).
+    let content = await renderedParagraph("x^(n)^")
+    XCTAssertEqual(content?.string, "x^(n)^")
+    XCTAssertEqual(baseline(at: 2, in: content), 0)
+  }
+
+  func test_adjacent_carets_nest() async {
+    let content = await renderedParagraph("^^a^^")
+    XCTAssertEqual(content?.string, "a")
+    XCTAssertGreaterThan(baseline(at: 0, in: content), 0)
+  }
+
+  func test_ordinal_superscript() async {
+    let content = await renderedParagraph("a^1^st")
+    XCTAssertEqual(content?.string, "a1st")
+    XCTAssertGreaterThan(baseline(at: 1, in: content), 0)
+    XCTAssertEqual(baseline(at: 2, in: content), 0)
+  }
+
   // MARK: - Multi-spec interactions
 
   func test_crossing_pairs_stay_literal_and_intact() async {
