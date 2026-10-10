@@ -69,7 +69,8 @@ final class StreamedMarkdownController: ObservableObject {
 
   private let source: StreamedMarkdownSource
   private let parser = MarkdownParserImpl()
-  var task: Task<Void, Never>?
+  /// The streaming task, exposed read-only so tests can await completion.
+  private(set) var task: Task<Void, Never>?
 
   init(
     source: StreamedMarkdownSource,
@@ -92,6 +93,8 @@ final class StreamedMarkdownController: ObservableObject {
         lastText = text
         if Task.isCancelled { return }
         await MainActor.run {
+          // Cancellation during the hop must not publish a stale frame.
+          guard !Task.isCancelled else { return }
           self.markdownToRender = renderable
         }
       }
@@ -102,6 +105,7 @@ final class StreamedMarkdownController: ObservableObject {
         let renderable = await self.parser.parse(text: lastText, config: self.config)
         if Task.isCancelled { return }
         await MainActor.run {
+          guard !Task.isCancelled else { return }
           self.markdownToRender = renderable
         }
       }
